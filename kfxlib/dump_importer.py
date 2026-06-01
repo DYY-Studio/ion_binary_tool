@@ -446,13 +446,35 @@ def import_dump(dump_source, outfile):
     return complete_fragments
 
 
+def default_output_filename(dump_source):
+    source_path = os.path.abspath(dump_source)
+
+    if os.path.isdir(source_path):
+        source_path = source_path.rstrip("\\/")
+        output_dir = os.path.dirname(source_path)
+        output_base = os.path.basename(source_path)
+    else:
+        output_dir = os.path.dirname(source_path)
+        output_base = os.path.splitext(os.path.basename(source_path))[0]
+
+    if not output_base:
+        output_base = "dump_import"
+
+    return os.path.join(output_dir, output_base + ".kfx-zip")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Import raw dumped KFX fragments into a KFX Input unpack ZIP.")
     parser.add_argument(
         "dump_source", nargs="?", default="dump",
         help="Directory or zip file containing <container>.<id>.<type>.bin files")
-    parser.add_argument("outfile", nargs="?", default="dump_import.kfx-zip", help="Output .kfx-zip/.zip filename")
+    parser.add_argument(
+        "outfile", nargs="?", default=None,
+        help="Output .kfx-zip/.zip filename. Defaults to the input file/folder name.")
     args = parser.parse_args(argv)
+
+    if args.outfile is None:
+        args.outfile = default_output_filename(args.dump_source)
 
     fragments = import_dump(args.dump_source, args.outfile)
     summary_filename = args.outfile + ".summary.txt"
@@ -460,10 +482,10 @@ def main(argv=None):
         "Imported %d fragments into %s\n" % (len(fragments), args.outfile)).encode("utf-8"))
 
     media_count = len(fragments.get_all("$417")) + len(fragments.get_all("$418"))
-    print("Imported %d fragments from %s" % (len(fragments), args.dump_source))
+    print("Imported %d fragments from %s" % (len(fragments), os.path.abspath(args.dump_source)))
     print("Media resources: %d" % media_count)
-    print("Wrote KFX-ZIP: %s (%d bytes)" % (args.outfile, os.path.getsize(args.outfile)))
-    print("Summary: %s" % summary_filename)
+    print("Wrote KFX-ZIP: %s (%d bytes)" % (os.path.abspath(args.outfile), os.path.getsize(args.outfile)))
+    print("Summary: %s" % os.path.abspath(summary_filename))
 
 
 if __name__ == "__main__":
