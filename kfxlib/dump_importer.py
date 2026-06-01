@@ -471,21 +471,26 @@ def main(argv=None):
     parser.add_argument(
         "outfile", nargs="?", default=None,
         help="Output .kfx-zip/.zip filename. Defaults to the input file/folder name.")
+    parser.add_argument(
+        "--summary", action="store_true",
+        help="Also write a small .summary.txt file next to the output.")
     args = parser.parse_args(argv)
 
     if args.outfile is None:
         args.outfile = default_output_filename(args.dump_source)
 
     fragments = import_dump(args.dump_source, args.outfile)
-    summary_filename = args.outfile + ".summary.txt"
-    file_write_binary(summary_filename, (
-        "Imported %d fragments into %s\n" % (len(fragments), args.outfile)).encode("utf-8"))
 
     media_count = len(fragments.get_all("$417")) + len(fragments.get_all("$418"))
     print("Imported %d fragments from %s" % (len(fragments), os.path.abspath(args.dump_source)))
     print("Media resources: %d" % media_count)
     print("Wrote KFX-ZIP: %s (%d bytes)" % (os.path.abspath(args.outfile), os.path.getsize(args.outfile)))
-    print("Summary: %s" % os.path.abspath(summary_filename))
+
+    if args.summary:
+        summary_filename = args.outfile + ".summary.txt"
+        file_write_binary(summary_filename, (
+            "Imported %d fragments into %s\n" % (len(fragments), args.outfile)).encode("utf-8"))
+        print("Summary: %s" % os.path.abspath(summary_filename))
 
 
 if __name__ == "__main__":
