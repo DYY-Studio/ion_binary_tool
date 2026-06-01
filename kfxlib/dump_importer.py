@@ -317,6 +317,28 @@ def resource_to_raw_map(fragments):
     return result
 
 
+def media_extension(value):
+    data = bytes(value)
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG"):
+        return ".png"
+    if data.startswith(b"GIF"):
+        return ".gif"
+    if data.startswith(b"%PDF"):
+        return ".pdf"
+
+    return ""
+
+
+def resource_media_location(location, media_value):
+    if posixpath.splitext(location)[1]:
+        return location
+
+    extension = media_extension(media_value)
+    return location + extension if extension else location
+
+
 def create_media_fragments(fragments, raw_records):
     media_fragments = YJFragmentList()
     mapped_raw_fids = set()
@@ -328,6 +350,8 @@ def create_media_fragments(fragments, raw_records):
         raw_record = raw_records.get(raw_fid)
 
         if location and raw_record is not None:
+            location = resource_media_location(location, raw_record.value)
+            fragment.value[IS("$165")] = location
             media_fragments.append(YJFragment(
                 ftype=raw_record.ftype,
                 fid=IonSymbol(location),
@@ -379,15 +403,9 @@ def media_filename(fragment):
     if posixpath.splitext(filename)[1]:
         return filename
 
-    data = bytes(fragment.value)
-    if data.startswith(b"\xff\xd8\xff"):
-        return filename + "..jpg"
-    if data.startswith(b"\x89PNG"):
-        return filename + "..png"
-    if data.startswith(b"GIF"):
-        return filename + "..gif"
-    if data.startswith(b"%PDF"):
-        return filename + "..pdf"
+    extension = media_extension(fragment.value)
+    if extension:
+        return filename + extension
 
     return filename
 
@@ -437,8 +455,15 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     fragments = import_dump(args.dump_source, args.outfile)
-    file_write_binary(args.outfile + ".summary.txt", (
+    summary_filename = args.outfile + ".summary.txt"
+    file_write_binary(summary_filename, (
         "Imported %d fragments into %s\n" % (len(fragments), args.outfile)).encode("utf-8"))
+
+    media_count = len(fragments.get_all("$417")) + len(fragments.get_all("$418"))
+    print("Imported %d fragments from %s" % (len(fragments), args.dump_source))
+    print("Media resources: %d" % media_count)
+    print("Wrote KFX-ZIP: %s (%d bytes)" % (args.outfile, os.path.getsize(args.outfile)))
+    print("Summary: %s" % summary_filename)
 
 
 if __name__ == "__main__":
