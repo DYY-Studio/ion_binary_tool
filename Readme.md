@@ -19,6 +19,8 @@ Great work finished by [Codex](https://github.com/openai/codex)
   # <ContainerID>.<File ID>.<Type ID>.bin
   # Container ID do not affect result
   python import_dump.py "<Fragments Dir / Zip>" (Optional)"<KFX-ZIP Output Path>"
+  python import_dump.py --epub "<Fragments Dir / Zip>" (Optional)"<EPUB Output Path>"
+  python import_dump.py --epub --keep-kfx-zip "<Fragments Dir / Zip>" "<EPUB Output Path>"
   ```
 
 # License

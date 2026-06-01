@@ -545,7 +545,7 @@ def import_dump(dump_source, outfile):
     return complete_fragments
 
 
-def default_output_filename(dump_source):
+def default_output_filename(dump_source, extension=".kfx-zip"):
     source_path = os.path.abspath(dump_source)
 
     if os.path.isdir(source_path):
@@ -559,15 +559,14 @@ def default_output_filename(dump_source):
     if not output_base:
         output_base = "dump_import"
 
-    return os.path.join(output_dir, output_base + ".kfx-zip")
+    return os.path.join(output_dir, output_base + extension)
 
 
-def default_epub_filename(kfx_zip_filename):
-    for extension in [".kfx-zip", ".zip"]:
-        if kfx_zip_filename.lower().endswith(extension):
-            return kfx_zip_filename[:-len(extension)] + ".epub"
+def kfx_zip_filename_for_epub(epub_filename):
+    if epub_filename.lower().endswith(".epub"):
+        return epub_filename[:-len(".epub")] + ".kfx-zip"
 
-    return os.path.splitext(kfx_zip_filename)[0] + ".epub"
+    return epub_filename + ".kfx-zip"
 
 
 class SilentLog(object):
@@ -612,6 +611,10 @@ def convert_kfx_zip_to_epub(kfx_zip_filename, epub_filename):
     return epub_data, job_log
 
 
+def remove_intermediate_kfx_zip(filename):
+    os.remove(filename)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Import raw dumped KFX fragments into a KFX Input unpack ZIP.")
     parser.add_argument(
@@ -619,7 +622,7 @@ def main(argv=None):
         help="Directory or zip file containing <container>.<id>.<type>.bin files")
     parser.add_argument(
         "outfile", nargs="?", default=None,
-        help="Output .kfx-zip/.zip filename. Defaults to the input file/folder name.")
+        help="Output filename. Defaults to the input file/folder name; means EPUB when --epub is used.")
     parser.add_argument(
         "--summary", action="store_true",
         help="Also write a small .summary.txt file next to the output.")
@@ -627,33 +630,39 @@ def main(argv=None):
         "--epub", action="store_true",
         help="Also convert the generated KFX-ZIP to EPUB.")
     parser.add_argument(
-        "--epub-out", default=None, metavar="EPUBFILE",
-        help="EPUB output filename. Implies --epub and defaults to the KFX-ZIP base name.")
+        "--keep-kfx-zip", action="store_true",
+        help="Keep the intermediate KFX-ZIP when converting to EPUB.")
     args = parser.parse_args(argv)
 
-    if args.outfile is None:
-        args.outfile = default_output_filename(args.dump_source)
+    if args.epub:
+        epub_filename = args.outfile or default_output_filename(args.dump_source, ".epub")
+        kfx_zip_filename = kfx_zip_filename_for_epub(epub_filename)
+        if os.path.abspath(epub_filename) == os.path.abspath(kfx_zip_filename):
+            raise ValueError("EPUB output filename must be different from the intermediate KFX-ZIP filename")
+    else:
+        epub_filename = None
+        kfx_zip_filename = args.outfile or default_output_filename(args.dump_source)
 
-    if args.epub_out is not None:
-        args.epub = True
-
-    fragments = import_dump(args.dump_source, args.outfile)
+    fragments = import_dump(args.dump_source, kfx_zip_filename)
 
     media_count = len(fragments.get_all("$417")) + len(fragments.get_all("$418"))
     print("Imported %d fragments from %s" % (len(fragments), os.path.abspath(args.dump_source)))
     print("Media resources: %d" % media_count)
-    print("Wrote KFX-ZIP: %s (%d bytes)" % (os.path.abspath(args.outfile), os.path.getsize(args.outfile)))
+    print("Wrote KFX-ZIP: %s (%d bytes)" % (os.path.abspath(kfx_zip_filename), os.path.getsize(kfx_zip_filename)))
 
     if args.summary:
-        summary_filename = args.outfile + ".summary.txt"
+        summary_filename = kfx_zip_filename + ".summary.txt"
         file_write_binary(summary_filename, (
-            "Imported %d fragments into %s\n" % (len(fragments), args.outfile)).encode("utf-8"))
+            "Imported %d fragments into %s\n" % (len(fragments), kfx_zip_filename)).encode("utf-8"))
         print("Summary: %s" % os.path.abspath(summary_filename))
 
     if args.epub:
-        epub_filename = args.epub_out or default_epub_filename(args.outfile)
-        epub_data, job_log = convert_kfx_zip_to_epub(args.outfile, epub_filename)
+        epub_data, job_log = convert_kfx_zip_to_epub(kfx_zip_filename, epub_filename)
         print("Wrote EPUB: %s (%d bytes)" % (os.path.abspath(epub_filename), len(epub_data)))
+
+        if not args.keep_kfx_zip:
+            remove_intermediate_kfx_zip(kfx_zip_filename)
+            print("Removed intermediate KFX-ZIP: %s" % os.path.abspath(kfx_zip_filename))
 
         if job_log.warnings:
             print("EPUB conversion warnings: %d" % len(job_log.warnings))
