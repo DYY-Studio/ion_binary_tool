@@ -4,6 +4,7 @@ import copy
 import os
 import posixpath
 import re
+import sys
 import zipfile
 
 from .ion import IonAnnotation, IonBLOB, IonStruct, IonSymbol, IS, ion_type
@@ -561,6 +562,56 @@ def default_output_filename(dump_source):
     return os.path.join(output_dir, output_base + ".kfx-zip")
 
 
+def default_epub_filename(kfx_zip_filename):
+    for extension in [".kfx-zip", ".zip"]:
+        if kfx_zip_filename.lower().endswith(extension):
+            return kfx_zip_filename[:-len(extension)] + ".epub"
+
+    return os.path.splitext(kfx_zip_filename)[0] + ".epub"
+
+
+class SilentLog(object):
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def warn(self, msg):
+        pass
+
+    def error(self, msg):
+        pass
+
+    def exception(self, msg):
+        pass
+
+
+def convert_kfx_zip_to_epub(kfx_zip_filename, epub_filename):
+    calibre_modules = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibre-plugin-modules")
+    if calibre_modules not in sys.path:
+        sys.path.insert(0, calibre_modules)
+
+    from .message_logging import JobLog, set_logger
+    from .yj_book import YJ_Book
+
+    job_log = JobLog(SilentLog())
+    set_logger(job_log)
+    try:
+        epub_data = YJ_Book(kfx_zip_filename).convert_to_epub()
+    finally:
+        set_logger()
+
+    if job_log.errors:
+        raise RuntimeError("EPUB conversion reported errors:\n%s" % "\n".join(job_log.errors))
+
+    file_write_binary(epub_filename, epub_data)
+    return epub_data, job_log
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Import raw dumped KFX fragments into a KFX Input unpack ZIP.")
     parser.add_argument(
@@ -572,10 +623,19 @@ def main(argv=None):
     parser.add_argument(
         "--summary", action="store_true",
         help="Also write a small .summary.txt file next to the output.")
+    parser.add_argument(
+        "--epub", action="store_true",
+        help="Also convert the generated KFX-ZIP to EPUB.")
+    parser.add_argument(
+        "--epub-out", default=None, metavar="EPUBFILE",
+        help="EPUB output filename. Implies --epub and defaults to the KFX-ZIP base name.")
     args = parser.parse_args(argv)
 
     if args.outfile is None:
         args.outfile = default_output_filename(args.dump_source)
+
+    if args.epub_out is not None:
+        args.epub = True
 
     fragments = import_dump(args.dump_source, args.outfile)
 
@@ -589,6 +649,18 @@ def main(argv=None):
         file_write_binary(summary_filename, (
             "Imported %d fragments into %s\n" % (len(fragments), args.outfile)).encode("utf-8"))
         print("Summary: %s" % os.path.abspath(summary_filename))
+
+    if args.epub:
+        epub_filename = args.epub_out or default_epub_filename(args.outfile)
+        epub_data, job_log = convert_kfx_zip_to_epub(args.outfile, epub_filename)
+        print("Wrote EPUB: %s (%d bytes)" % (os.path.abspath(epub_filename), len(epub_data)))
+
+        if job_log.warnings:
+            print("EPUB conversion warnings: %d" % len(job_log.warnings))
+            for warning in job_log.warnings[:20]:
+                print("Warning: %s" % warning)
+            if len(job_log.warnings) > 20:
+                print("Warning: ... %d more" % (len(job_log.warnings) - 20))
 
 
 if __name__ == "__main__":
