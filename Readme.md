@@ -18,7 +18,7 @@ Great work finished by [Codex](https://github.com/openai/codex)
   # The fragments must named as
   # <ContainerID>.<File ID>.<Type ID>.bin
   # Container ID do not affect result
-  python import_dump.py "<Fragments Dir / Zip>"
+  python import_dump.py "<Fragments Dir / Zip>" (Optional)"<KFX-ZIP Output Path>"
   ```
 
 # License
