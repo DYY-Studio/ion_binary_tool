@@ -147,6 +147,7 @@ class KFXInput(InputFormatPlugin):
     def cli_main(self, argv):
         from calibre_plugins.kfx_input.config import (config_desaturate_notebooks, config_split_landscape_comic_images)
         from calibre_plugins.kfx_input.kfxlib import (file_write_binary, JobLog, set_logger, YJ_Book)
+        from calibre_plugins.kfx_input.kfxlib.dump_importer import import_dump, is_dump_source
         from calibre_plugins.kfx_input.jobs import report_version
 
         self.cli = True
@@ -160,7 +161,9 @@ class KFXInput(InputFormatPlugin):
         parser = argparse.ArgumentParser(
                 prog='calibre-debug -r "KFX Input" --',
                 description="Convert KFX e-book to EPUB, PDF, CBZ or extract its resources")
-        parser.add_argument("infile", help="Pathname of the %s file or notebook folder to be processed" % ext_choices)
+        parser.add_argument(
+            "infile",
+            help="Pathname of the %s file, KFX fragment dump zip, or notebook folder to be processed" % ext_choices)
         parser.add_argument("outfile", nargs="?", help="Optional pathname of the resulting .epub, .pdf, .cbz, or .zip file")
         parser.add_argument("-e", "--epub", action="store_true", help="Convert to EPUB (default action)")
         parser.add_argument("-2", "--epub2", action="store_true", help="Convert to EPUB 2 instead of EPUB 3")
@@ -171,23 +174,34 @@ class KFXInput(InputFormatPlugin):
         parser.add_argument("-c", "--cover", action="store_true", help="Create a generic EPUB cover page if the book does not already have one")
         args = parser.parse_args(argv[1:])
 
+        fragment_dump_source = False
+
         if os.path.isfile(args.infile):
             intype = os.path.splitext(args.infile)[1]
-            if intype not in allowed_exts:
+            fragment_dump_source = intype.lower() == ".zip" and is_dump_source(args.infile)
+            if intype not in allowed_exts and not fragment_dump_source:
                 log.error("Input file must be %s" % ext_choices)
                 return
         elif os.path.isdir(args.infile):
             if args.infile.endswith(".sdr"):
                 log.error("Input folder must not be SDR: %s" % args.infile)
                 return
+
+            fragment_dump_source = is_dump_source(args.infile)
         else:
             log.error("Input file does not exist: %s" % args.infile)
             return
 
         log.info("Processing %s" % args.infile)
 
+        infile = args.infile
+        if fragment_dump_source:
+            infile = self.temporary_file(".kfx-zip").name
+            fragments = import_dump(args.infile, infile)
+            log.info("Imported %d KFX fragment(s) as %s" % (len(fragments), infile))
+
         set_logger(log)
-        book = YJ_Book(args.infile, symbol_catalog_filename=get_symbol_catalog_filename())
+        book = YJ_Book(infile, symbol_catalog_filename=get_symbol_catalog_filename())
         book.decode_book(retain_yj_locals=True)
 
         if args.unpack:

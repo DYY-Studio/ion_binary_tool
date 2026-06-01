@@ -19,10 +19,36 @@ class PackageKFXFileTypePlugin(FileTypePlugin):
     minimum_calibre_version = (5, 0, 0)
 
     def run(self, path_to_ebook):
-        if os.path.splitext(path_to_ebook)[1].lower() == ".kfx-zip":
+        ext = os.path.splitext(path_to_ebook)[1].lower()
+
+        if ext == ".kfx-zip":
             return self.package_kfx(path_to_ebook)
 
+        if ext == ".zip":
+            return self.import_fragment_dump_zip(path_to_ebook)
+
         return path_to_ebook
+
+    def import_fragment_dump_zip(self, path_to_ebook):
+        from calibre.utils.logging import Log
+        from calibre_plugins.kfx_input.kfxlib import set_logger
+        from calibre_plugins.kfx_input.kfxlib.dump_importer import import_dump, is_dump_source
+
+        if not is_dump_source(path_to_ebook):
+            return path_to_ebook
+
+        log = set_logger(Log())
+        log.info("%s %s: Importing KFX fragment dump %s" % (
+            self.name, ".".join([str(i) for i in self.version]), path_to_ebook))
+
+        try:
+            outfile = self.temporary_file(".kfx-zip").name
+            fragments = import_dump(path_to_ebook, outfile)
+            log.info("%s: Imported %d fragment(s) as %s" % (self.name, len(fragments), outfile))
+        finally:
+            set_logger()
+
+        return self.package_kfx(outfile)
 
     def package_kfx(self, path_to_ebook):
         from calibre.utils.logging import Log

@@ -63,6 +63,43 @@ def iter_dump_file_data(dump_source):
         raise ValueError("Dump input must be a directory or zip file: %s" % dump_source)
 
 
+def iter_dump_file_names(dump_source):
+    if os.path.isdir(dump_source):
+        for filename in sorted(os.listdir(dump_source)):
+            path = os.path.join(dump_source, filename)
+            if os.path.isfile(path):
+                yield filename, filename
+
+    elif zipfile.is_zipfile(dump_source):
+        with zipfile.ZipFile(dump_source, "r") as zf:
+            for info in sorted(zf.infolist(), key=lambda item: item.filename):
+                if info.is_dir():
+                    continue
+
+                filename = posixpath.basename(info.filename)
+                if filename:
+                    yield filename, info.filename
+
+    else:
+        raise ValueError("Dump input must be a directory or zip file: %s" % dump_source)
+
+
+def is_dump_source(dump_source):
+    try:
+        found_records = False
+
+        for filename, source_name in iter_dump_file_names(dump_source):
+            if DUMP_FILE_RE.match(filename) is None:
+                return False
+
+            found_records = True
+
+        return found_records
+
+    except Exception:
+        return False
+
+
 def load_dump_records(dump_source):
     records = []
     bad_names = []
