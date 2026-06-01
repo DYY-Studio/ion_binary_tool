@@ -14,7 +14,7 @@ from .utilities import file_write_binary
 from .yj_container import (
         CONTAINER_FORMAT_KFX_ATTACHABLE, CONTAINER_FORMAT_KFX_MAIN, CONTAINER_FORMAT_KFX_METADATA,
         YJFragment, YJFragmentList)
-from .yj_symbol_catalog import SYSTEM_SYMBOL_TABLE
+from .yj_symbol_catalog import SYSTEM_SYMBOL_TABLE, YJ_SYMBOLS
 
 
 __license__ = "GPL v3"
@@ -27,6 +27,11 @@ MAIN_CONTAINER_TYPES = {259, 260, 538}
 METADATA_CONTAINER_TYPES = {258, 419, 490, 585}
 RAW_MEDIA_TYPES = {"$417", "$418"}
 CONTAINER_FRAGMENT_TYPES = {"$270", "$419", "$593", "$ion_symbol_table"}
+YJ_IMPORT_MAX_SID = 827
+
+
+def safe_yj_import_max_id():
+    return max(0, min(len(YJ_SYMBOLS.symbols), YJ_IMPORT_MAX_SID - len(SYSTEM_SYMBOL_TABLE.symbols)))
 
 
 class DumpRecord(object):
@@ -100,7 +105,6 @@ def decode_records(records, symtab):
             record.value = IonBinary(symtab).deserialize_single_value(record.data, import_symbols=True)
             if isinstance(record.value, IonAnnotation):
                 if record.value.is_annotation(record.ftype) and record.fid is None:
-                    record.fid = record.ftype
                     record.value = record.value.value
                 else:
                     record.value = record.value.value
@@ -132,8 +136,84 @@ def collect_symbol_refs(value, numeric_refs, named_refs):
             named_refs.add(symbol)
 
 
-def create_symbol_table_fragment(records, fragments, symtab, extra_symbols=None):
+def numeric_symbol_sid(symbol):
+    if isinstance(symbol, IonSymbol):
+        text = symbol.tostring()
+    elif isinstance(symbol, str):
+        text = symbol
+    else:
+        return None
+
+    if text.startswith("$") and text[1:].isdigit():
+        return int(text[1:])
+
+    return None
+
+
+def rename_symbol_refs(value, renamed_symbols):
+    data_type = ion_type(value)
+
+    if data_type is IonAnnotation:
+        return IonAnnotation(value.annotations, rename_symbol_refs(value.value, renamed_symbols))
+
+    if isinstance(value, IonStruct):
+        result = IonStruct()
+        for key, val in value.items():
+            result[key] = rename_symbol_refs(val, renamed_symbols)
+        return result
+
+    if isinstance(value, list):
+        return [rename_symbol_refs(val, renamed_symbols) for val in value]
+
+    if isinstance(value, IonSymbol):
+        return renamed_symbols.get(value.tostring(), value)
+
+    return value
+
+
+def rename_local_numeric_fids(records, fragments, raw_records=None):
+    renamed_symbols = {}
+    raw_records = {} if raw_records is None else raw_records
+    raw_fids = {fid.tostring() for fid in raw_records.keys()}
+
+    for fragment in fragments:
+        sid = numeric_symbol_sid(fragment.fid)
+        if sid is not None and sid > YJ_IMPORT_MAX_SID and fragment.fid.tostring() not in raw_fids:
+            renamed_symbols[fragment.fid.tostring()] = IonSymbol("content_%d" % sid)
+
+    value_refs = set()
+    for fragment in fragments:
+        collect_symbol_value_refs(fragment.value, value_refs)
+
+    for symbol in value_refs:
+        sid = numeric_symbol_sid(symbol)
+        if sid is not None and sid > YJ_IMPORT_MAX_SID and symbol not in raw_fids:
+            renamed_symbols[symbol] = IonSymbol("content_%d" % sid)
+
+    if not renamed_symbols:
+        return fragments, renamed_symbols
+
+    for record in records:
+        if isinstance(record.fid, IonSymbol):
+            record.fid = renamed_symbols.get(record.fid.tostring(), record.fid)
+
+    renamed_fragments = YJFragmentList()
+    for fragment in fragments:
+        if fragment.is_single():
+            fid = None
+        else:
+            fid = renamed_symbols.get(fragment.fid.tostring(), fragment.fid) if isinstance(fragment.fid, IonSymbol) else fragment.fid
+        renamed_fragments.append(YJFragment(
+            ftype=fragment.ftype,
+            fid=fid,
+            value=rename_symbol_refs(fragment.value, renamed_symbols)))
+
+    return renamed_fragments, renamed_symbols
+
+
+def create_symbol_table_fragment(records, fragments, symtab, extra_symbols=None, renamed_symbols=None):
     extra_symbols = [] if extra_symbols is None else list(extra_symbols)
+    renamed_symbols = {} if renamed_symbols is None else renamed_symbols
     max_sid = max([record.fid_sid for record in records] + [record.ftype_sid for record in records])
     numeric_refs = set()
     named_refs = set()
@@ -143,13 +223,17 @@ def create_symbol_table_fragment(records, fragments, symtab, extra_symbols=None)
     if numeric_refs:
         max_sid = max(max_sid, max(numeric_refs))
 
+    yj_max_id = safe_yj_import_max_id()
     system_symbols = set(SYSTEM_SYMBOL_TABLE.symbols)
-    local_min_id = len(SYSTEM_SYMBOL_TABLE.symbols) + 1
+    imported_symbols = set(YJ_SYMBOLS.symbols[:yj_max_id])
+    local_min_id = len(SYSTEM_SYMBOL_TABLE.symbols) + yj_max_id + 1
     local_symbols = []
-    seen_symbols = set(system_symbols)
+    seen_symbols = system_symbols | imported_symbols
 
     for sid in range(local_min_id, max_sid + 1):
-        symbol = symtab.symbol_of_id.get(sid, "$%d" % sid)
+        symbol = renamed_symbols.get("$%d" % sid, symtab.symbol_of_id.get(sid, "$%d" % sid))
+        if isinstance(symbol, IonSymbol):
+            symbol = symbol.tostring()
         if symbol in seen_symbols:
             symbol = "$%d" % sid
         local_symbols.append(symbol)
@@ -161,6 +245,10 @@ def create_symbol_table_fragment(records, fragments, symtab, extra_symbols=None)
             seen_symbols.add(symbol)
 
     symbol_table_data = IonStruct(
+        IS("imports"), [IonStruct(
+            IS("name"), "YJ_symbols",
+            IS("version"), 10,
+            IS("max_id"), yj_max_id)],
         IS("symbols"), local_symbols,
         IS("max_id"), local_min_id - 1 + len(local_symbols))
 
@@ -300,9 +388,10 @@ def create_format_capabilities_fragment():
         ])
 
 
-def resource_to_raw_map(fragments):
+def resource_to_raw_map(fragments, raw_records):
     entity_map = fragments.get("$419", first=True)
     result = {}
+    raw_fids = set(raw_records.keys())
 
     if entity_map is None or not isinstance(entity_map.value, IonStruct):
         return result
@@ -311,8 +400,15 @@ def resource_to_raw_map(fragments):
         entity_id = dep.get("$155")
         mandatory = dep.get("$254", [])
         if isinstance(entity_id, IonSymbol) and entity_id.tostring().startswith("$"):
-            if mandatory:
-                result[entity_id] = mandatory[0]
+            for fid in mandatory:
+                if fid in raw_fids:
+                    result[entity_id] = fid
+                    break
+        elif isinstance(entity_id, IonSymbol):
+            for fid in mandatory:
+                if fid in raw_fids:
+                    result[entity_id] = fid
+                    break
 
     return result
 
@@ -342,7 +438,7 @@ def resource_media_location(location, media_value):
 def create_media_fragments(fragments, raw_records):
     media_fragments = YJFragmentList()
     mapped_raw_fids = set()
-    media_map = resource_to_raw_map(fragments)
+    media_map = resource_to_raw_map(fragments, raw_records)
 
     for fragment in fragments.get_all("$164"):
         location = fragment.value.get("$165") if isinstance(fragment.value, IonStruct) else None
@@ -425,6 +521,7 @@ def import_dump(dump_source, outfile):
     records = load_dump_records(dump_source)
     fragments, raw_records = decode_records(records, symtab)
     fragments, dropped_position_maps = drop_unreferenced_position_maps(fragments)
+    fragments, renamed_symbols = rename_local_numeric_fids(records, fragments, raw_records)
     media_fragments = create_media_fragments(fragments, raw_records)
     cover_alias = create_cover_alias_fragment(fragments)
 
@@ -433,7 +530,8 @@ def import_dump(dump_source, outfile):
         extra_symbols.append(cover_alias.fid.tostring())
 
     complete_fragments = YJFragmentList()
-    complete_fragments.append(create_symbol_table_fragment(records, fragments, symtab, extra_symbols=extra_symbols))
+    complete_fragments.append(create_symbol_table_fragment(
+        records, fragments, symtab, extra_symbols=extra_symbols, renamed_symbols=renamed_symbols))
     complete_fragments.extend(create_container_fragments(
         records, fragments, omit_keys=[fragment_key(fragment.ftype, fragment.fid) for fragment in dropped_position_maps]))
     complete_fragments.append(create_format_capabilities_fragment())
