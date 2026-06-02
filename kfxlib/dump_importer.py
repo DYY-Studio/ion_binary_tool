@@ -381,12 +381,60 @@ def create_container_fragments(records, fragments, omit_keys=None):
     return container_fragments
 
 
-def create_format_capabilities_fragment():
-    return YJFragment(ftype="$593", value=[
-        IonStruct(IS("$492"), "kfxgen.positionMaps", IS("version"), 2),
-        IonStruct(IS("$492"), "kfxgen.pidMapWithOffset", IS("version"), 1),
-        IonStruct(IS("$492"), "kfxgen.textBlock", IS("version"), 1),
-        ])
+def spim_has_eid_offset(spim_entries):
+    for entry in spim_entries:
+        if isinstance(entry, list) and len(entry) > 2 and entry[2]:
+            return True
+        if isinstance(entry, IonStruct) and entry.get("$143", 0):
+            return True
+
+    return False
+
+
+def has_section_position_id_map(fragments):
+    position_id_map = fragments.get("$265", first=True)
+    return position_id_map is not None and isinstance(position_id_map.value, IonStruct)
+
+
+def has_position_maps_capability(fragments):
+    return has_section_position_id_map(fragments) or fragments.get("$621", first=True) is not None
+
+
+def has_position_id_offset(fragments):
+    for fragment in fragments.get_all("$609"):
+        if isinstance(fragment.value, IonStruct) and spim_has_eid_offset(fragment.value.get("$181", [])):
+            return True
+
+    position_id_map = fragments.get("$265", first=True)
+    if position_id_map is None:
+        return False
+
+    if isinstance(position_id_map.value, list):
+        return spim_has_eid_offset(position_id_map.value)
+
+    if isinstance(position_id_map.value, IonStruct):
+        for section_map in position_id_map.value.get("$181", []):
+            section_name = section_map.get("$174") if isinstance(section_map, IonStruct) else None
+            section_spim = fragments.get(ftype="$609", fid=section_name) if section_name is not None else None
+            if section_spim is not None and spim_has_eid_offset(section_spim.value.get("$181", [])):
+                return True
+
+    return False
+
+
+def create_format_capabilities_fragment(fragments):
+    capabilities = []
+
+    if has_position_maps_capability(fragments):
+        capabilities.append(IonStruct(IS("$492"), "kfxgen.positionMaps", IS("version"), 2))
+
+    if has_position_id_offset(fragments):
+        capabilities.append(IonStruct(IS("$492"), "kfxgen.pidMapWithOffset", IS("version"), 1))
+
+    if fragments.get("$145", first=True) is not None:
+        capabilities.append(IonStruct(IS("$492"), "kfxgen.textBlock", IS("version"), 1))
+
+    return YJFragment(ftype="$593", value=capabilities)
 
 
 def resource_to_raw_map(fragments, raw_records):
@@ -478,6 +526,70 @@ def get_cover_image_id(fragments):
     return None
 
 
+def as_symbol_text(value):
+    return value.tostring() if isinstance(value, IonSymbol) else str(value)
+
+
+def reading_order_section_ids(fragments):
+    for ftype in ["$538", "$258"]:
+        fragment = fragments.get(ftype, first=True)
+        if fragment is None or not isinstance(fragment.value, IonStruct):
+            continue
+
+        for reading_order in fragment.value.get("$169", []):
+            for section_id in reading_order.get("$170", []):
+                yield section_id
+
+
+def find_first_image_resource_in_value(fragments, value, visited_stories):
+    if isinstance(value, IonAnnotation):
+        return find_first_image_resource_in_value(fragments, value.value, visited_stories)
+
+    if isinstance(value, list):
+        for item in value:
+            resource = find_first_image_resource_in_value(fragments, item, visited_stories)
+            if resource is not None:
+                return resource
+        return None
+
+    if not isinstance(value, IonStruct):
+        return None
+
+    if value.get("$159") == "$271" and "$175" in value:
+        resource = fragments.get(ftype="$164", fid=value["$175"], first=True)
+        if resource is not None:
+            return resource
+
+    story_id = value.get("$176")
+    if story_id is not None and story_id not in visited_stories:
+        visited_stories.add(story_id)
+        story = fragments.get(ftype="$259", fid=story_id, first=True)
+        if story is not None:
+            resource = find_first_image_resource_in_value(fragments, story.value, visited_stories)
+            if resource is not None:
+                return resource
+
+    for item in value.values():
+        resource = find_first_image_resource_in_value(fragments, item, visited_stories)
+        if resource is not None:
+            return resource
+
+    return None
+
+
+def first_ordered_image_resource(fragments):
+    for section_id in reading_order_section_ids(fragments):
+        section = fragments.get(ftype="$260", fid=section_id, first=True)
+        if section is None:
+            continue
+
+        resource = find_first_image_resource_in_value(fragments, section.value, set())
+        if resource is not None:
+            return resource
+
+    return fragments.get("$164", first=True)
+
+
 def create_cover_alias_fragment(fragments):
     cover_id = get_cover_image_id(fragments)
     if not cover_id:
@@ -486,13 +598,13 @@ def create_cover_alias_fragment(fragments):
     if fragments.get(ftype="$164", fid=cover_id, first=True) is not None:
         return None
 
-    source = fragments.get("$164", first=True)
+    source = first_ordered_image_resource(fragments)
     if source is None or not isinstance(source.value, IonStruct):
         return None
 
     value = copy.deepcopy(source.value)
-    value[IS("$175")] = IonSymbol(cover_id)
-    return YJFragment(ftype="$164", fid=IonSymbol(cover_id), value=value)
+    value[IS("$175")] = IonSymbol(as_symbol_text(cover_id))
+    return YJFragment(ftype="$164", fid=IonSymbol(as_symbol_text(cover_id)), value=value)
 
 
 def media_filename(fragment):
@@ -535,7 +647,7 @@ def import_dump(dump_source, outfile):
         records, fragments, symtab, extra_symbols=extra_symbols, renamed_symbols=renamed_symbols))
     complete_fragments.extend(create_container_fragments(
         records, fragments, omit_keys=[fragment_key(fragment.ftype, fragment.fid) for fragment in dropped_position_maps]))
-    complete_fragments.append(create_format_capabilities_fragment())
+    complete_fragments.append(create_format_capabilities_fragment(fragments))
     complete_fragments.extend(fragments)
     if cover_alias is not None:
         complete_fragments.append(cover_alias)
